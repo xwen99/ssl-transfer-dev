@@ -54,6 +54,7 @@ The datasets files (images, labels, splits etc.) can be downloaded from the foll
 
 [CIFAR10/100](https://pytorch.org/vision/stable/datasets.html),
 [Aircraft](https://www.robots.ox.ac.uk/~vgg/data/fgvc-aircraft/),
+[Birdsnap](https://thomasberg.org/),
 [Caltech101](http://www.vision.caltech.edu/Image_Datasets/Caltech101/),
 [Cars](https://ai.stanford.edu/~jkrause/cars/car_dataset.html),
 [DTD](https://www.robots.ox.ac.uk/~vgg/data/dtd/),
@@ -61,10 +62,7 @@ The datasets files (images, labels, splits etc.) can be downloaded from the foll
 [Food](https://data.vision.ee.ethz.ch/cvl/datasets_extra/food-101/),
 [Pets](https://www.robots.ox.ac.uk/~vgg/data/pets/),
 [SUN397](https://vision.princeton.edu/projects/2010/SUN/),
-[VOC](http://host.robots.ox.ac.uk/pascal/VOC/),
-[CropDiseases, EuroSAT, ISIC2018, ChestX](https://github.com/IBM/cdfsl-benchmark),
-[NYUv2](https://cs.nyu.edu/~silberman/datasets/nyu_depth_v2.html),
-[ADE20K](https://groups.csail.mit.edu/vision/datasets/ADE20K/)
+[VOC](http://host.robots.ox.ac.uk/pascal/VOC/)
 
 To use our Caltech101 splits move both the `train.txt` and `test.txt` files found in `caltech101-splits` in to your Caltech101 data location (e.g. `../data/Caltech101/`).
 

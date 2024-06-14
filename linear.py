@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.data.sampler import SubsetRandomSampler
-from torchvision import datasets, transforms, models
+from torchvision import datasets, transforms
 
 import PIL
 import numpy as np
@@ -30,8 +30,11 @@ from datasets.sun397 import SUN397
 from datasets.voc2007 import VOC2007
 from datasets.flowers import Flowers
 from datasets.aircraft import Aircraft
+from datasets.birdsnap import Birdsnap
 from datasets.caltech101 import Caltech101
 
+import models
+from config import *
 
 def voc_ap(rec, prec):
     """
@@ -191,34 +194,17 @@ class LinearTester():
 
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_path):
         super().__init__()
-        self.model_name = model_name
-
-        self.model = models.resnet50(pretrained=False)
-        del self.model.fc
-
-        state_dict = torch.load(os.path.join('models', self.model_name + '.pth'))
-        self.model.load_state_dict(state_dict)
-
+        self.model = models.rn50()
+        state_dict = torch.load(model_path)['state_dict']
+        state_dict = {k.replace('module.', '').replace('visual.', ''): v for k, v in state_dict.items()}
+        msg = self.model.load_state_dict(state_dict, strict=False)
+        print(msg)
         self.model.eval()
-        print("Number of model parameters:", sum(p.numel() for p in self.model.parameters()))
 
     def forward(self, x):
-        x = self.model.conv1(x)
-        x = self.model.bn1(x)
-        x = self.model.relu(x)
-        x = self.model.maxpool(x)
-
-        x = self.model.layer1(x)
-        x = self.model.layer2(x)
-        x = self.model.layer3(x)
-        x = self.model.layer4(x)
-
-        x = self.model.avgpool(x)
-        x = torch.flatten(x, 1)
-
-        return x
+        return self.model(x)
 
 
 # Data classes and functions
@@ -378,9 +364,11 @@ def get_test_loader(dset,
 
     return data_loader
 
-def prepare_data(dset, data_dir, batch_size, image_size, normalisation):
-    if normalisation:
+def prepare_data(dset, data_dir, batch_size, image_size, normalisation='imagenet'):
+    if normalisation == 'imagenet':
         normalise_dict = {'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225]}
+    elif normalisation == 'openai':
+        normalise_dict = {'mean': [0.48145466, 0.4578275, 0.40821073], 'std': [0.26862954, 0.26130258, 0.27577711]}
     else:
         normalise_dict = {'mean': [0.0, 0.0, 0.0], 'std': [1.0, 1.0, 1.0]}
     train_loader, val_loader, trainval_loader = get_train_valid_loader(dset, data_dir, normalise_dict,
@@ -392,38 +380,33 @@ def prepare_data(dset, data_dir, batch_size, image_size, normalisation):
 
 # name: {class, root, num_classes, metric}
 LINEAR_DATASETS = {
-    'aircraft': [Aircraft, '../data/Aircraft', 100, 'mean per-class accuracy'],
-    'caltech101': [Caltech101, '../data/Caltech101', 102, 'mean per-class accuracy'],
-    'cars': [Cars, '../data/Cars', 196, 'accuracy'],
-    'cifar10': [datasets.CIFAR10, '../data/CIFAR10', 10, 'accuracy'],
-    'cifar100': [datasets.CIFAR100, '../data/CIFAR100', 100, 'accuracy'],
-    'dtd': [DTD, '../data/DTD', 47, 'accuracy'],
-    'flowers': [Flowers, '../data/Flowers', 102, 'mean per-class accuracy'],
-    'food': [Food, '../data/Food', 101, 'accuracy'],
-    'pets': [Pets, '../data/Pets', 37, 'mean per-class accuracy'],
-    'sun397': [SUN397, '../data/SUN397', 397, 'accuracy'],
-    'voc2007': [VOC2007, '../data/VOC2007', 20, 'mAP'],
+    'aircraft': [Aircraft, AIRCRAFT_ROOT, 100, 'mean per-class accuracy'],
+    'birdsnap': [Birdsnap, BIRDSNAP_ROOT, 500, 'accuracy'],
+    'caltech101': [Caltech101, CALTECH101_ROOT, 102, 'mean per-class accuracy'],
+    'cars': [Cars, CARS_ROOT, 196, 'accuracy'],
+    'cifar10': [datasets.CIFAR10, CIFAR10_ROOT, 10, 'accuracy'],
+    'cifar100': [datasets.CIFAR100, CIFAR100_ROOT, 100, 'accuracy'],
+    'dtd': [DTD, DTD_ROOT, 47, 'accuracy'],
+    'flowers': [Flowers, FLOWERS_ROOT, 102, 'mean per-class accuracy'],
+    'food': [Food, FOOD_ROOT, 101, 'accuracy'],
+    'pets': [Pets, PETS_ROOT, 37, 'mean per-class accuracy'],
+    'sun397': [SUN397, SUN397_ROOT, 397, 'accuracy'],
+    'voc2007': [VOC2007, VOC_ROOT, 20, 'mAP'],
 }
 
 # Main code
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evaluate pretrained self-supervised model via logistic regression.')
-    parser.add_argument('-m', '--model', type=str, default='deepcluster-v2',
-                        help='name of the pretrained model to load and evaluate (deepcluster-v2 | supervised)')
-    parser.add_argument('-d', '--dataset', type=str, default='cifar10', help='name of the dataset to evaluate on')
-    parser.add_argument('-b', '--batch-size', type=int, default=64, help='the size of the mini-batches when inferring features')
-    parser.add_argument('-i', '--image-size', type=int, default=224, help='the size of the input images')
-    parser.add_argument('-w', '--wd-values', type=int, default=45, help='the number of weight decay values to validate')
-    parser.add_argument('-c', '--C', type=float, default=None, help='sklearn C value (1 / weight_decay), if not tuning on validation set')
-    parser.add_argument('-n', '--no-norm', action='store_true', default=False,
-                        help='whether to turn off data normalisation (based on ImageNet values)')
-    parser.add_argument('--device', type=str, default='cuda', help='CUDA or CPU training (cuda | cpu)')
-    args = parser.parse_args()
-    args.norm = not args.no_norm
+def main(args, dataset=None):
+    pprint(args)
+
+    if args.dataset != 'all':
+        dataset = args.dataset
+    elif dataset is None:
+        raise ValueError('dataset must be specified if args.dataset is "all"')
+
     pprint(args)
 
     # load dataset
-    dset, data_dir, num_classes, metric = LINEAR_DATASETS[args.dataset]
+    dset, data_dir, num_classes, metric = LINEAR_DATASETS[dataset]
     train_loader, val_loader, trainval_loader, test_loader = prepare_data(
         dset, data_dir, args.batch_size, args.image_size, normalisation=args.norm)
 
@@ -442,5 +425,34 @@ if __name__ == "__main__":
         tester.best_params = {'C': args.C}
     # use best hyperparameters to finally evaluate the model
     test_acc, ece, scaled_ece, C = tester.evaluate()
-    print(f'Final accuracy for {args.model} on {args.dataset}: {test_acc:.2f}% using hyperparameter C: {C:.3f}')
-    print(f'ECE: {ece:.3f}, temperature scaled ECE: {scaled_ece:.3f}')
+    print(f'Final accuracy for {args.model} on {dataset}: {test_acc:.2f}% using hyperparameter C: {C:.3f}')
+    if ece is not None and scaled_ece is not None:
+        print(f'ECE: {ece:.3f}, temperature scaled ECE: {scaled_ece:.3f}')
+    
+
+    import csv
+    with open(os.path.join(os.path.dirname(args.model), 'linear.csv'), 'a') as f:
+        writer = csv.writer(f, delimiter='\t')
+        if os.path.getsize(os.path.join(os.path.dirname(args.model), 'linear.csv')) == 0:
+            writer.writerow(['dataset', 'test_acc', 'C', 'ece', 'scaled_ece'])
+        writer.writerow([dataset, test_acc, C, ece if ece is not None else '', scaled_ece if scaled_ece is not None else ''])
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Evaluate pretrained self-supervised model via logistic regression.')
+    parser.add_argument('-m', '--model', type=str, default='deepcluster-v2',
+                        help='name of the pretrained model to load and evaluate (deepcluster-v2 | supervised)')
+    parser.add_argument('-d', '--dataset', type=str, default='cifar10', help='name of the dataset to evaluate on')
+    parser.add_argument('-b', '--batch-size', type=int, default=256, help='the size of the mini-batches when inferring features')
+    parser.add_argument('-i', '--image-size', type=int, default=224, help='the size of the input images')
+    parser.add_argument('-w', '--wd-values', type=int, default=45, help='the number of weight decay values to validate')
+    parser.add_argument('-c', '--C', type=float, default=None, help='sklearn C value (1 / weight_decay), if not tuning on validation set')
+    parser.add_argument('-n', '--norm', type=str, default='imagenet', help='normalization methods')
+    parser.add_argument('--device', type=str, default='cuda', help='CUDA or CPU training (cuda | cpu)')
+    args = parser.parse_args()
+
+    if args.dataset == 'all':
+        for dataset in LINEAR_DATASETS.keys():
+            main(args, dataset)
+    else:
+        main(args)

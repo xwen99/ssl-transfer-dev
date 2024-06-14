@@ -9,17 +9,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from torchvision import models, datasets
+from torchvision import datasets
 
 import numpy as np
 from tqdm import tqdm
 
-from datasets import isic
-from datasets import eurosat
-from datasets import cropdiseases
-from datasets import chestx
-
-from datasets import few_shot_dataset
+from datasets.few_shot_dataset import SetDataManager
 
 from datasets.dtd import DTD
 from datasets.pets import Pets
@@ -29,8 +24,11 @@ from datasets.sun397 import SUN397
 from datasets.voc2007 import VOC2007
 from datasets.flowers import Flowers
 from datasets.aircraft import Aircraft
+from datasets.birdsnap import Birdsnap
 from datasets.caltech101 import Caltech101
 
+import models
+from config import *
 
 class FewShotTester():
     def __init__(self, backbone, dataloader, n_way, n_support, n_query, iter_num, device):
@@ -46,7 +44,8 @@ class FewShotTester():
 
     def test(self):
         loss, acc, std = self.evaluate(self.protonet, self.dataloader, self.n_support, self.n_query, self.iter_num)
-        print('Test Acc = %4.2f%% +- %4.2f%%' %(acc, 1.96 * std / np.sqrt(self.iter_num)))
+        std = 1.96 * std / np.sqrt(self.iter_num)
+        print('Test Acc = %4.2f%% +- %4.2f%%' %(acc, std))
         return acc, std
 
     def extract_episode(self, data, n_support, n_query):
@@ -159,58 +158,63 @@ class ProtoNet(nn.Module):
 
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_path):
         super().__init__()
-        self.model_name = model_name
-
-        self.model = models.resnet50(pretrained=False)
-        del self.model.fc
-
-        state_dict = torch.load(os.path.join('models', self.model_name + '.pth'))
-        self.model.load_state_dict(state_dict)
-
-        self.model.train()
-        print("num parameters:", sum(p.numel() for p in self.model.parameters()))
+        self.model = models.rn50()
+        state_dict = torch.load(model_path)['state_dict']
+        state_dict = {k.replace('module.', '').replace('visual.', ''): v for k, v in state_dict.items()}
+        msg = self.model.load_state_dict(state_dict, strict=False)
+        print(msg)
+        self.model.eval()
 
     def forward(self, x):
-        x = self.model.conv1(x)
-        x = self.model.bn1(x)
-        x = self.model.relu(x)
-        x = self.model.maxpool(x)
-
-        x = self.model.layer1(x)
-        x = self.model.layer2(x)
-        x = self.model.layer3(x)
-        x = self.model.layer4(x)
-
-        x = self.model.avgpool(x)
-        x = torch.flatten(x, 1)
-
-        return x
+        return self.model(x)
 
 
 # name: {class, root, num_classes (not necessary here), metric}
 FEW_SHOT_DATASETS = {
-    'cropdiseases': [cropdiseases, '../data/CropDiseases', None, 'accuracy'],
-    'eurosat': [eurosat, '../data/EuroSAT', None, 'accuracy'],
-    'isic': [isic, '../data/ISIC', None, 'accuracy'],
-    'chestx': [chestx, '../data/ChestX', None, 'accuracy'],
-
-    'aircraft': [Aircraft, '../data/Aircraft', 100, 'accuracy'],
-    'caltech101': [Caltech101, '../data/Caltech101', 102, 'accuracy'],
-    'cars': [Cars, '../data/Cars', 196, 'accuracy'],
-    'cifar10': [datasets.CIFAR10, '../data/CIFAR10', 10, 'accuracy'],
-    'cifar100': [datasets.CIFAR100, '../data/CIFAR100', 100, 'accuracy'],
-    'dtd': [DTD, '../data/DTD', 47, 'accuracy'],
-    'flowers': [Flowers, '../data/Flowers', 102, 'accuracy'],
-    'food': [Food, '../data/Food', 101, 'accuracy'],
-    'pets': [Pets, '../data/Pets', 37, 'accuracy'],
-    'sun397': [SUN397, '../data/SUN397', 397, 'accuracy'],
-    'voc2007': [VOC2007, '../data/VOC2007', 20, 'accuracy'],
+    'aircraft': [Aircraft, AIRCRAFT_ROOT, 100, 'mean per-class accuracy'],
+    'caltech101': [Caltech101, CALTECH101_ROOT, 102, 'mean per-class accuracy'],
+    'cars': [Cars, CARS_ROOT, 196, 'accuracy'],
+    'cifar10': [datasets.CIFAR10, CIFAR10_ROOT, 10, 'accuracy'],
+    'cifar100': [datasets.CIFAR100, CIFAR100_ROOT, 100, 'accuracy'],
+    'dtd': [DTD, DTD_ROOT, 47, 'accuracy'],
+    'flowers': [Flowers, FLOWERS_ROOT, 102, 'mean per-class accuracy'],
+    'food': [Food, FOOD_ROOT, 101, 'accuracy'],
+    'pets': [Pets, PETS_ROOT, 37, 'mean per-class accuracy'],
+    'sun397': [SUN397, SUN397_ROOT, 397, 'accuracy'],
 }
 
 
 # Main code
+def main(args, dataset=None):
+    pprint(args)
+
+    if args.dataset != 'all':
+        dataset = args.dataset
+    elif dataset is None:
+        raise ValueError('dataset must be specified if args.dataset is "all"')
+
+    # load dataset
+    dset, data_dir, num_classes, metric = FEW_SHOT_DATASETS[dataset]
+    datamgr = SetDataManager(dset, data_dir, num_classes, args.image_size, normalisation=args.norm,
+                             n_episode=args.iter_num, n_way=args.n_way, n_support=args.n_support, n_query=args.n_query)
+    dataloader = datamgr.get_data_loader(aug=False, normalise=True)
+
+    # load pretrained model
+    model = ResNetBackbone(args.model)
+    model = model.to(args.device)
+
+    # evaluate model on dataset by protonet few-shot-learning evaluation
+    tester = FewShotTester(model, dataloader, args.n_way, args.n_support, args.n_query, args.iter_num, args.device)
+    test_acc, test_std = tester.test()
+
+    import csv
+    with open(os.path.join(os.path.dirname(args.model), 'fewshot.csv'), 'a') as f:
+        writer = csv.writer(f, delimiter='\t')
+        if os.path.getsize(os.path.join(os.path.dirname(args.model), 'fewshot.csv')) == 0:
+            writer.writerow(['dataset', 'n_way', 'n_support', 'n_query', 'iter_num', 'test_acc', 'test_std'])
+        writer.writerow([dataset, args.n_way, args.n_support, args.n_query, args.iter_num, test_acc, test_std])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Evaluate pretrained self-supervised model on few-shot recognition.')
@@ -222,27 +226,12 @@ if __name__ == "__main__":
     parser.add_argument('--n-support', type=int, default=5, help='the number of images per class for fitting (n-support) in few-shot evaluation')
     parser.add_argument('--n-query', type=int, default=15, help='the number of images per class for testing (n-query) in few-shot evaluation')
     parser.add_argument('--iter-num', type=int, default=600, help='the number of testing episodes in few-shot evaluation')
-    parser.add_argument('-n', '--no-norm', action='store_true', default=False,
-                        help='whether to turn off data normalisation (based on ImageNet values)')
+    parser.add_argument('-n', '--norm', type=str, default='imagenet', help='normalization methods')
     parser.add_argument('--device', type=str, default='cuda', help='CUDA or CPU training (cuda | cpu)')
     args = parser.parse_args()
-    args.norm = not args.no_norm
-    pprint(args)
 
-    # load dataset
-    dset, data_dir, num_classes, metric = FEW_SHOT_DATASETS[args.dataset]
-    if args.dataset in ['cropdiseases', 'eurosat', 'isic', 'chestx']:
-        datamgr = dset.SetDataManager(data_dir, args.image_size, n_episode=args.iter_num,
-                                      n_way=args.n_way, n_support=args.n_support, n_query=args.n_query)
+    if args.dataset == 'all':
+        for dataset in FEW_SHOT_DATASETS.keys():
+            main(args, dataset)
     else:
-        datamgr = few_shot_dataset.SetDataManager(dset, data_dir, num_classes, args.image_size, n_episode=args.iter_num,
-                                      n_way=args.n_way, n_support=args.n_support, n_query=args.n_query)
-    dataloader = datamgr.get_data_loader(aug=False, normalise=args.norm)
-
-    # load pretrained model
-    model = ResNetBackbone(args.model)
-    model = model.to(args.device)
-
-    # evaluate model on dataset by protonet few-shot-learning evaluation
-    tester = FewShotTester(model, dataloader, args.n_way, args.n_support, args.n_query, args.iter_num, args.device)
-    test_acc, test_std = tester.test()
+        main(args)

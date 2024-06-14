@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, ConcatDataset
 from torch.utils.data.sampler import SubsetRandomSampler
-from torchvision import datasets, transforms, models
+from torchvision import datasets, transforms
 
 import PIL
 import numpy as np
@@ -26,8 +26,11 @@ from datasets.sun397 import SUN397
 from datasets.voc2007 import VOC2007
 from datasets.flowers import Flowers
 from datasets.aircraft import Aircraft
+from datasets.birdsnap import Birdsnap
 from datasets.caltech101 import Caltech101
 
+import models
+from config import *
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -205,7 +208,7 @@ class FinetuneModel(nn.Module):
 
 class FinetuneTester():
     def __init__(self, model_name, train_loader, val_loader, trainval_loader, test_loader,
-                 metric, device, num_classes, feature_dim=2048, grid=None, steps=5000):
+                 metric, device, num_classes, grid=None, steps=5000):
         self.model_name = model_name
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -214,14 +217,13 @@ class FinetuneTester():
         self.metric = metric
         self.device = device
         self.num_classes = num_classes
-        self.feature_dim = feature_dim
         self.grid = grid
         self.steps = steps
         self.best_params = {}
 
     def validate(self):
         best_score = 0
-        for i, (lr, wd) in enumerate(grid):
+        for i, (lr, wd) in enumerate(self.grid):
             print(f'Run {i}')
             print(f'lr={lr}, wd={wd}')
 
@@ -229,7 +231,7 @@ class FinetuneTester():
             self.model = ResNetBackbone(self.model_name)
             self.model = self.model.to(self.device)
             self.finetuner = FinetuneModel(self.model, self.num_classes, self.steps,
-                                           self.metric, self.device, self.feature_dim)
+                                           self.metric, self.device, self.model.model.output_dim)
             val_acc = self.finetuner.tune(self.train_loader, self.val_loader, lr, wd)
             print(f'Finetuned val accuracy {val_acc:.2f}%')
 
@@ -247,41 +249,24 @@ class FinetuneTester():
         self.model = self.model.to(self.device)
         
         self.finetuner = FinetuneModel(self.model, self.num_classes, self.steps,
-                                       self.metric, self.device, self.feature_dim)
+                                       self.metric, self.device, self.model.model.output_dim)
         test_score = self.finetuner.tune(self.trainval_loader, self.test_loader, self.best_params['lr'], self.best_params['wd'])
         print(f'Finetuned test accuracy {test_score:.2f}%')
-        return test_score
+        return self.best_params['lr'], self.best_params['wd'], test_score
 
 
 class ResNetBackbone(nn.Module):
-    def __init__(self, model_name):
+    def __init__(self, model_path):
         super().__init__()
-        self.model_name = model_name
-
-        self.model = models.resnet50(pretrained=False)
-        del self.model.fc
-
-        state_dict = torch.load(os.path.join('models', self.model_name + '.pth'))
-        self.model.load_state_dict(state_dict)
-
-        self.model.train()
-        print("num parameters:", sum(p.numel() for p in self.model.parameters()))
+        self.model = models.rn50()
+        state_dict = torch.load(model_path)['state_dict']
+        state_dict = {k.replace('module.', '').replace('visual.', ''): v for k, v in state_dict.items()}
+        msg = self.model.load_state_dict(state_dict, strict=False)
+        print(msg)
+        self.model.eval()
 
     def forward(self, x):
-        x = self.model.conv1(x)
-        x = self.model.bn1(x)
-        x = self.model.relu(x)
-        x = self.model.maxpool(x)
-
-        x = self.model.layer1(x)
-        x = self.model.layer2(x)
-        x = self.model.layer3(x)
-        x = self.model.layer4(x)
-
-        x = self.model.avgpool(x)
-        x = torch.flatten(x, 1)
-
-        return x
+        return self.model(x)
 
 
 # Data classes and functions
@@ -461,8 +446,10 @@ def get_test_loader(dset,
 
 def prepare_data(dset, data_dir, batch_size, image_size, normalisation, num_workers, data_augmentation):
     print(f'Loading {dset} from {data_dir}, with batch size={batch_size}, image size={image_size}, norm={normalisation}')
-    if normalisation:
+    if normalisation == 'imagenet':
         normalise_dict = {'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225]}
+    elif normalisation == 'openai':
+        normalise_dict = {'mean': [0.48145466, 0.4578275, 0.40821073], 'std': [0.26862954, 0.26130258, 0.27577711]}
     else:
         normalise_dict = {'mean': [0.0, 0.0, 0.0], 'std': [1.0, 1.0, 1.0]}
     train_loader, val_loader, trainval_loader = get_train_valid_loader(dset, data_dir, normalise_dict,
@@ -475,42 +462,34 @@ def prepare_data(dset, data_dir, batch_size, image_size, normalisation, num_work
 
 # name: {class, root, num_classes, metric}
 FINETUNE_DATASETS = {
-    'aircraft': [Aircraft, '../data/Aircraft', 100, 'mean per-class accuracy'],
-    'caltech101': [Caltech101, '../data/Caltech101', 102, 'mean per-class accuracy'],
-    'cars': [Cars, '../data/Cars', 196, 'accuracy'],
-    'cifar10': [datasets.CIFAR10, '../data/CIFAR10', 10, 'accuracy'],
-    'cifar100': [datasets.CIFAR100, '../data/CIFAR100', 100, 'accuracy'],
-    'dtd': [DTD, '../data/DTD', 47, 'accuracy'],
-    'flowers': [Flowers, '../data/Flowers', 102, 'mean per-class accuracy'],
-    'food': [Food, '../data/Food', 101, 'accuracy'],
-    'pets': [Pets, '../data/Pets', 37, 'mean per-class accuracy'],
-    'sun397': [SUN397, '../data/SUN397', 397, 'accuracy'],
-    'voc2007': [VOC2007, '../data/VOC2007', 20, 'mAP'],
+    'aircraft': [Aircraft, AIRCRAFT_ROOT, 100, 'mean per-class accuracy'],
+    'birdsnap': [Birdsnap, BIRDSNAP_ROOT, 500, 'accuracy'],
+    'caltech101': [Caltech101, CALTECH101_ROOT, 102, 'mean per-class accuracy'],
+    'cars': [Cars, CARS_ROOT, 196, 'accuracy'],
+    'cifar10': [datasets.CIFAR10, CIFAR10_ROOT, 10, 'accuracy'],
+    'cifar100': [datasets.CIFAR100, CIFAR100_ROOT, 100, 'accuracy'],
+    'dtd': [DTD, DTD_ROOT, 47, 'accuracy'],
+    'flowers': [Flowers, FLOWERS_ROOT, 102, 'mean per-class accuracy'],
+    'food': [Food, FOOD_ROOT, 101, 'accuracy'],
+    'pets': [Pets, PETS_ROOT, 37, 'mean per-class accuracy'],
+    'sun397': [SUN397, SUN397_ROOT, 397, 'accuracy'],
+    'voc2007': [VOC2007, VOC_ROOT, 20, 'mAP'],
 }
 
 # Main code
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Evaluate pretrained self-supervised model via finetuning.')
-    parser.add_argument('-m', '--model', type=str, default='deepcluster-v2', help='name of the pretrained model to load and evaluate')
-    parser.add_argument('-d', '--dataset', type=str, default='cifar10', help='name of the dataset to evaluate on')
-    parser.add_argument('-b', '--batch-size', type=int, default=64, help='the size of the mini-batches when inferring features')
-    parser.add_argument('-i', '--image-size', type=int, default=224, help='the size of the input images')
-    parser.add_argument('-w', '--workers', type=int, default=8, help='the number of workers for loading the data')
-    parser.add_argument('-g', '--grid-size', type=int, default=4, help='the number of learning rate values in the search grid')
-    parser.add_argument('--steps', type=int, default=5000, help='the number of finetuning steps')
-    parser.add_argument('--no-da', action='store_true', default=False, help='disables data augmentation during training')
-    parser.add_argument('-n', '--no-norm', action='store_true', default=False,
-                        help='whether to turn off data normalisation (based on ImageNet values)')
-    parser.add_argument('--device', type=str, default='cuda', help='CUDA or CPU training (cuda | cpu)')
-    args = parser.parse_args()
-    args.norm = not args.no_norm
-    args.da = not args.no_da
-    del args.no_norm
-    del args.no_da
+def main(args, dataset=None):
+    pprint(args)
+
+    if args.dataset != 'all':
+        dataset = args.dataset
+    elif dataset is None:
+        raise ValueError('dataset must be specified if args.dataset is "all"')
+
+    pprint(args)
     pprint(args)
 
     # load dataset
-    dset, data_dir, num_classes, metric = FINETUNE_DATASETS[args.dataset]
+    dset, data_dir, num_classes, metric = FINETUNE_DATASETS[dataset]
     train_loader, val_loader, trainval_loader, test_loader = prepare_data(
         dset, data_dir, args.batch_size, args.image_size, normalisation=args.norm, num_workers=args.workers,
         data_augmentation=args.da)
@@ -527,4 +506,33 @@ if __name__ == "__main__":
     # tune hyperparameters
     tester.validate()
     # use best hyperparameters to finally evaluate the model
-    test_score = tester.evaluate()
+    best_lr, best_wd, test_score = tester.evaluate()
+
+    import csv
+    with open(os.path.join(os.path.dirname(args.model), 'finetune.csv'), 'a') as f:
+        writer = csv.writer(f, delimiter='\t')
+        if os.path.getsize(os.path.join(os.path.dirname(args.model), 'finetune.csv')) == 0:
+            writer.writerow(['dataset', 'test_acc', 'best_lr', 'best_wd'])
+        writer.writerow([dataset, test_score, best_lr, best_wd])
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Evaluate pretrained self-supervised model via finetuning.')
+    parser.add_argument('-m', '--model', type=str, default='deepcluster-v2', help='name of the pretrained model to load and evaluate')
+    parser.add_argument('-d', '--dataset', type=str, default='cifar10', help='name of the dataset to evaluate on')
+    parser.add_argument('-b', '--batch-size', type=int, default=256, help='the size of the mini-batches when inferring features')
+    parser.add_argument('-i', '--image-size', type=int, default=224, help='the size of the input images')
+    parser.add_argument('-w', '--workers', type=int, default=8, help='the number of workers for loading the data')
+    parser.add_argument('-g', '--grid-size', type=int, default=4, help='the number of learning rate values in the search grid')
+    parser.add_argument('--steps', type=int, default=5000, help='the number of finetuning steps')
+    parser.add_argument('--no-da', action='store_true', default=False, help='disables data augmentation during training')
+    parser.add_argument('-n', '--norm', type=str, default='imagenet', help='normalization methods')
+    parser.add_argument('--device', type=str, default='cuda', help='CUDA or CPU training (cuda | cpu)')
+    args = parser.parse_args()
+    args.da = not args.no_da
+
+    if args.dataset == 'all':
+        for dataset in FINETUNE_DATASETS.keys():
+            main(args, dataset)
+    else:
+        main(args)

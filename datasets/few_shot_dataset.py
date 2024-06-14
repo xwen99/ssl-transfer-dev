@@ -155,7 +155,7 @@ class TransformLoader:
             return method(self.image_size) 
         elif transform_type=='CenterCrop':
             return method(self.image_size) 
-        elif transform_type=='Scale':
+        elif transform_type=='Resize':
             return method([int(self.image_size*1.15), int(self.image_size*1.15)])
         elif transform_type=='Normalize':
             return method(**self.normalize_param )
@@ -170,9 +170,9 @@ class TransformLoader:
                 transform_list = ['RandomSizedCrop', 'ImageJitter', 'RandomHorizontalFlip', 'ToTensor']
         else:
             if normalise:
-                transform_list = ['Scale','CenterCrop', 'ToTensor', 'Normalize']
+                transform_list = ['Resize','CenterCrop', 'ToTensor', 'Normalize']
             else:
-                transform_list = ['Scale','CenterCrop', 'ToTensor']
+                transform_list = ['Resize','CenterCrop', 'ToTensor']
 
         transform_funcs = [self.parse_transform(x) for x in transform_list]
         transform = transforms.Compose(transform_funcs)
@@ -184,7 +184,7 @@ class DataManager(object):
         pass
 
 class SetDataManager(DataManager):
-    def __init__(self, dset, root, num_classes, image_size, n_way=5, n_support=5, n_query=16, n_episode=100, seed=0):        
+    def __init__(self, dset, root, num_classes, image_size, normalisation='imagenet', n_way=5, n_support=5, n_query=16, n_episode=100, seed=0):        
         super(SetDataManager, self).__init__()
         self.dset = dset
         self.root = root
@@ -194,7 +194,13 @@ class SetDataManager(DataManager):
         self.batch_size = n_support + n_query
         self.n_episode = n_episode
 
-        self.trans_loader = TransformLoader(image_size)
+        if normalisation == 'imagenet':
+            normalise_dict = {'mean': [0.485, 0.456, 0.406], 'std': [0.229, 0.224, 0.225]}
+        elif normalisation == 'openai':
+            normalise_dict = {'mean': [0.48145466, 0.4578275, 0.40821073], 'std': [0.26862954, 0.26130258, 0.27577711]}
+        else:
+            normalise_dict = {'mean': [0.0, 0.0, 0.0], 'std': [1.0, 1.0, 1.0]}
+        self.trans_loader = TransformLoader(image_size, normalise_dict)
 
         np.random.seed(seed)
         torch.manual_seed(seed)
